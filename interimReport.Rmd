@@ -1,0 +1,368 @@
+---
+title: "Capstone interim report"
+author: "Tim Sloan"
+date: "17 March 2016"
+output: html_document
+---
+
+The following report describes the analysis of a large collection of blogs, news articles and tweets. The purpose of the analysis is to understand how this data could be used to build a predictive text application. A brief outline plan for the application is given at the end of the document.
+
+# Exploratory data analysis
+
+```{r library, echo=FALSE, message=FALSE, warning=FALSE}
+
+library(tm)
+library(dplyr)
+library(knitr)
+library(RWeka)
+library(wordcloud)
+library(ggplot2)
+library(reshape2)
+library(SnowballC)
+        
+options(digits=2)
+
+```
+
+## Getting and tidying the data
+
+```{r load_data, echo=FALSE, cache=TRUE, warning=FALSE, messages=FALSE}
+
+blogfile <- file("rawdata/final/en_US/en_US.blogs.txt","r")
+blogs <- readLines(blogfile)
+close(blogfile)
+
+newsfile <- file("rawdata/final/en_US/en_US.news.txt","r")
+news <- readLines(newsfile)
+close(blogfile)
+
+twitterfile <- file("rawdata/final/en_US/en_US.twitter.txt","r")
+twitter <- readLines(twitterfile)
+close(twitterfile)
+
+```
+
+The data was downloaded from <https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip> and unzipped. The 3 text files containing blogs, news articles and tweets were then opened and some basic summary statistics calculated.  
+
+Line and word counts were as follows:
+
+```{r line_count, echo=FALSE, cache=TRUE}
+
+blo_len <- length(blogs) # Number of blog entries
+new_len <- length(news) # Number of news entries
+twi_len <- length(twitter) # Number of tweets
+
+```
+
+```{r word_count, echo=FALSE, cache=TRUE}
+
+blog_text <- paste(blogs, collapse = " ")
+news_text <- paste(news, collapse = " ")
+twitter_text <- paste(twitter, collapse = " ")
+
+blo_wc <- length(unlist(strsplit(blog_text,"\\s+"))) # Blog word count
+new_wc <- length(unlist(strsplit(news_text,"\\s+"))) # News word count
+twi_wc <- length(unlist(strsplit(twitter_text,"\\s+"))) # Twitter word count
+
+summary <- data.frame(cbind(c("Blogs","News","Twitter"),c(blo_len,new_len,twi_len),c(blo_wc,new_wc,twi_wc)))
+names(summary) <- c("Source", "Line count","Word count")
+
+kable(summary)
+
+```
+
+As the amount of data in the sources placed significant demands on processing power and RAM, 1 entry for every 500 was chosen with a random sampler to reduce the amount of data significantly. The following data subsets were then used for further exploratory analysis:
+
+```{r subsample_data, echo=FALSE, cache=TRUE, warning=FALSE, message=FALSE}
+
+set.seed(1234)
+
+blog_sub <- blogs[rbinom(length(blogs),1,0.002)==1]
+news_sub <- news[rbinom(length(blogs),1,0.002)==1]
+twitter_sub <- twitter[rbinom(length(blogs),1,0.002)==1]
+
+blo_slen <- length(blog_sub) # Number of blog entries
+new_slen <- length(news_sub) # Number of news entries
+twi_slen <- length(twitter_sub) # Number of tweets
+
+blog_subtext <- paste(blog_sub, collapse = " ")
+news_subtext <- paste(news_sub, collapse = " ")
+twitter_subtext <- paste(twitter_sub, collapse = " ")
+
+blo_uni <- length(unique(unlist(strsplit(blog_subtext,"\\s+"))))
+new_uni <- length(unique(unlist(strsplit(news_subtext,"\\s+"))))
+twi_uni <- length(unique(unlist(strsplit(twitter_subtext,"\\s+"))))
+
+blo_swc <- length(unlist(strsplit(blog_subtext,"\\s+"))) # Blog word count
+new_swc <- length(unlist(strsplit(news_subtext,"\\s+"))) # News word count
+twi_swc <- length(unlist(strsplit(twitter_subtext,"\\s+"))) # Twitter word count
+
+sum_sub <- data.frame(cbind(c("Blogs","News","Twitter"),c(blo_slen,new_slen,twi_slen),c(blo_swc,new_swc,twi_swc),c(blo_uni,new_uni,twi_uni)))
+names(sum_sub) <- c("Source", "Line count","Word count","Unique words")
+
+kable(sum_sub)
+
+rm("blogs","news","twitter")
+
+```
+
+The data subsets were cleaned up with a text mining package in R (tm). 
+
+Data cleaning steps performed included:  
+1) Removal of unnecessary spaces from the text  
+2) Removal of all numbers and punctuation  
+3) Conversion of all characters to lower case
+
+```{r blog_clean, echo=FALSE, cache=TRUE, message=FALSE}
+
+blog_data <-    VCorpus(VectorSource(blog_subtext), 
+                        readerControl = list(reader = readPlain, language = "english", load = TRUE)) %>%
+                tm_map(stripWhitespace) %>%
+                tm_map(content_transformer(tolower)) %>%
+                tm_map(removePunctuation) %>%
+                tm_map(removeNumbers)
+```
+
+```{r data_clean, echo=FALSE, cache=TRUE, message=FALSE}
+
+news_data <-    VCorpus(VectorSource(news_subtext), readerControl = list(reader = readPlain, language = "english", load = TRUE)) %>%
+                tm_map(stripWhitespace) %>%
+                tm_map(content_transformer(tolower)) %>%
+                tm_map(removePunctuation) %>%
+                tm_map(removeNumbers)
+
+twitter_data <- VCorpus(VectorSource(twitter_subtext), readerControl = list(reader = readPlain, language = "english", load = TRUE)) %>%
+                tm_map(stripWhitespace) %>%
+                tm_map(content_transformer(tolower)) %>%
+                tm_map(removePunctuation) %>%
+                tm_map(removeNumbers)
+
+```
+
+
+## Word frequency analysis
+
+The twitter data was used for initial exploration. The frequency with which different words appeared within the texts was counted. As expected, the 10 most frequent words shown in the table below for the twitter data are so-called 'stop' words which are heavily used for sentence construction but do not hold much meaning. A histogram of twitter word counts confirms that the data are heavily skewed towards a few of these very frequent words, with the vast majority of words in the text having very low counts.
+
+```{r twitter_tdm, echo=FALSE, cache=TRUE, message=FALSE}
+
+twitt_dtm <- DocumentTermMatrix(twitter_data)
+
+twi_mat <- as.matrix(twitt_dtm)
+twi_freq <- colSums(twi_mat)
+twi_freq <- sort(twi_freq, decreasing=TRUE)
+twi_word <- names(twi_freq)
+
+kable(data.frame(Frequency=head(twi_freq,10)),align="l")
+hist(twi_freq, xlab="Word Count", main="Twitter word counts")
+
+```
+
+```{r twitter_coverage, echo=FALSE, cache=TRUE, message=FALSE}
+
+twi_wc <- sum(twi_freq) # Total corpus word count 45752
+twi_un <- length(twi_freq) # Total frequency table word count 9459
+
+cov1 <- (sum(twi_freq[twi_freq>1])/twi_wc)*100 # ~87 % coverage from words with counts > 1
+cov90 <- length(twi_freq[twi_freq>1]) # Number of words required for 90 % coverage
+
+cov30 <- (sum(twi_freq[twi_freq>30])/twi_wc)*100 # ~50 % coverage from words with counts > 30
+cov50 <- length(twi_freq[twi_freq>30]) # Number of words required for 50 % coverage
+
+```
+
+By interrogating the frequency table it was possible to get an estimate of the number of words required in a dictionary to gain reasonable coverage of the corpus. `r cov90` words were required for just under 90 % (`r cov1`%) coverage of the tweets analysed, while as few as `r cov50` words gave ~50 % (`r cov30`%) coverage. Stemming, i.e. shortening words by removing suffixes such as 'ing' and 'ed', and removal of non-English words could both be employed to increase coverage for fewer numbers of words, which may be desirable for a predictive text application.
+
+```{r dictionary, echo=FALSE, cache=TRUE}
+
+dictfile <- readLines("/usr/share/dict/american-english") %>%
+            paste(collapse=" ")
+
+dict <- VCorpus(VectorSource(dictfile), 
+                readerControl = list(reader = readPlain, language = "english", load = T)) %>%
+                tm_map(content_transformer(tolower)) %>%
+                tm_map(removePunctuation)
+
+dictwords <- unlist(strsplit(dict[[1]]$content, " "))
+
+twi_dict <- table(twi_word %in% dictwords) # Do the words appear in the English dictionary?
+td <- twi_dict[1]/twi_dict[2]*100
+twi_dict90 <- table(twi_word[twi_freq>1] %in% dictwords) # How many of the ~3500 words required for 90 % coverage appear in the dictionary?
+td90 <- twi_dict90[1]/twi_dict90[2]*100
+
+```
+
+By loading in an English dictionary file, it was possible to get an estimate for the proportion of the words used which were not in the English dictionary. This proportion was surprisingly low in the tweets, around a third (`r td` %), but fell to less than 10 % (`r td90` %) when only considering words appearing more than once suggesting filtering out non-dictionary words may be a viable strategy when compiling word lists for prediction.
+
+
+## Wordclouds for each source
+
+Any 'stop' words were removed from the sources and words were grouped together by stemming as described above. The following wordclouds show the most frequently used words in each source:
+
+### Twitter
+
+```{r twit_clean, echo=FALSE, cache=TRUE, message=FALSE}
+
+twit_clean <-   tm_map(twitter_data, removeWords, stopwords('english')) %>%
+                tm_map(stemDocument)
+
+twitt_dtm2 <- DocumentTermMatrix(twit_clean)
+#findFreqTerms(twitt_dtm2, 200)
+
+twi_mat2 <- as.matrix(twitt_dtm2)
+twi_freq2 <- colSums(twi_mat2)
+twi_freq2 <- sort(twi_freq2, decreasing=TRUE)
+twi_word2 <- names(twi_freq2)
+
+#kable(data.frame(Frequency=head(twi_freq2,10)))
+#hist(twi_freq2, xlab="Word Count", main="Twitter word counts", breaks=20)
+
+wordcloud(twi_word2[1:50], twi_freq2[1:50], colors=brewer.pal(8,"Dark2"))
+
+```
+
+### Blogs
+
+```{r blog_clean2, echo=FALSE, cache=TRUE, message=FALSE}
+
+blog_clean <-   tm_map(blog_data, removeWords, stopwords('english')) %>%
+                tm_map(stemDocument)
+
+blog_dtm <- DocumentTermMatrix(blog_clean)
+
+blog_mat <- as.matrix(blog_dtm)
+blog_freq <- colSums(blog_mat)
+blog_freq <- sort(blog_freq, decreasing=TRUE)
+blog_word <- names(blog_freq)
+
+wordcloud(blog_word[1:50], blog_freq[1:50], colors=brewer.pal(8,"Dark2"))
+
+```
+
+### News
+
+```{r news_clean, echo=FALSE, cache=TRUE, message=FALSE}
+
+news_clean <-   tm_map(news_data, removeWords, stopwords('english')) %>%
+                tm_map(stemDocument)
+
+news_dtm <- DocumentTermMatrix(news_clean)
+
+news_mat <- as.matrix(news_dtm)
+news_freq <- colSums(news_mat)
+news_freq <- sort(news_freq, decreasing=TRUE)
+news_word <- names(news_freq)
+
+wordcloud(news_word[1:50], news_freq[1:50], colors=brewer.pal(8,"Dark2"))
+
+```
+
+## Word co-occurence
+
+Word co-occurence is the most important consideration for text prediction. To look at the co-occurence of pairs and triplets or words through the sources, the most frequent bigrams (pairs) and trigrams (triplets) of words were calculated from the sources. This was performed on the data with stop words remaining as for a predictive text system the stop words would need to be included in the prediction algorithm.
+
+```{r bigrams, echo=FALSE, cache=TRUE}
+
+# Functions written using information from: http://stackoverflow.com/questions/8898521/finding-2-3-word-phrases-using-r-tm-package
+Bigram <- function(x,y) NGramTokenizer(x, Weka_control(min = 2, max = 2))
+Trigram <- function(x,y) NGramTokenizer(x, Weka_control(min = 3, max = 3))
+
+blog_2gr <- TermDocumentMatrix(blog_data, control = list(tokenize = Bigram))
+news_2gr <- TermDocumentMatrix(news_data, control = list(tokenize = Bigram))
+twit_2gr <- TermDocumentMatrix(twitter_data, control = list(tokenize = Bigram))
+
+```
+
+```{r trigrams, echo=FALSE, cache=TRUE}
+blog_3gr <- TermDocumentMatrix(blog_data, control = list(tokenize = Trigram))
+news_3gr <- TermDocumentMatrix(news_data, control = list(tokenize = Trigram))
+twit_3gr <- TermDocumentMatrix(twitter_data, control = list(tokenize = Trigram))
+
+```
+
+The following charts shows the most frequent bigrams and trigrams by source:
+
+```{r bigr_plot, echo=FALSE, cache=TRUE}
+
+blog_2grm <- as.matrix(blog_2gr)
+blog_2gr_freq <- rowSums(blog_2grm)
+blog_2gr_freq <- sort(blog_2gr_freq, decreasing=TRUE)
+blog_2gr_tab <- data.frame(cbind(bigram=names(blog_2gr_freq[1:2000]),blogs=blog_2gr_freq[1:2000]))
+blog_2gr_tab$blogs <- as.numeric(as.character(blog_2gr_tab$blogs))
+
+news_2grm <- as.matrix(news_2gr)
+news_2gr_freq <- rowSums(news_2grm)
+news_2gr_freq <- sort(news_2gr_freq, decreasing=TRUE)
+news_2gr_tab <- data.frame(cbind(bigram=names(news_2gr_freq[1:2000]),news=news_2gr_freq[1:2000]))
+news_2gr_tab$news <- as.numeric(as.character(news_2gr_tab$news))
+
+twit_2grm <- as.matrix(twit_2gr)
+twit_2gr_freq <- rowSums(twit_2grm)
+twit_2gr_freq <- sort(twit_2gr_freq, decreasing=TRUE)
+twit_2gr_tab <- data.frame(cbind(bigram=names(twit_2gr_freq[1:2000]),twitter=twit_2gr_freq[1:2000]))
+twit_2gr_tab$twitter <- as.numeric(as.character(twit_2gr_tab$twitter))
+
+bigr_tab <- merge(blog_2gr_tab, news_2gr_tab, by="bigram", all=T)
+bigr_all <- merge(bigr_tab, twit_2gr_tab, by="bigram", all=T)
+bigr_all$total <- rowSums(bigr_all[,2:4])
+bigr_all <- arrange(bigr_all, desc(total)) 
+bigr_plot <- melt(bigr_all[1:10,1:4], id="bigram")
+
+ggplot(data=bigr_plot, aes(x=bigram,y=value,fill=variable)) +geom_bar(stat="identity",position="dodge")+
+    labs(x="Bigram",y="Count") + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+```
+
+```{r trigr_plot, echo=FALSE, cache=TRUE, message=F, warning=F}
+
+blog_3grm <- as.matrix(blog_3gr)
+blog_3gr_freq <- rowSums(blog_3grm)
+blog_3gr_freq <- sort(blog_3gr_freq, decreasing=TRUE)
+blog_3gr_tab <- data.frame(cbind(trigram=names(blog_3gr_freq[1:2000]),blogs=blog_3gr_freq[1:2000]))
+blog_3gr_tab$blogs <- as.numeric(as.character(blog_3gr_tab$blogs))
+
+news_3grm <- as.matrix(news_3gr)
+news_3gr_freq <- rowSums(news_3grm)
+news_3gr_freq <- sort(news_3gr_freq, decreasing=TRUE)
+news_3gr_tab <- data.frame(cbind(trigram=names(news_3gr_freq[1:2000]),news=news_3gr_freq[1:2000]))
+news_3gr_tab$news <- as.numeric(as.character(news_3gr_tab$news))
+
+twit_3grm <- as.matrix(twit_3gr)
+twit_3gr_freq <- rowSums(twit_3grm)
+twit_3gr_freq <- sort(twit_3gr_freq, decreasing=TRUE)
+twit_3gr_tab <- data.frame(cbind(trigram=names(twit_3gr_freq[1:2000]),twitter=twit_3gr_freq[1:2000]))
+twit_3gr_tab$twitter <- as.numeric(as.character(twit_3gr_tab$twitter))
+
+trigr_tab <- merge(blog_3gr_tab, news_3gr_tab, by="trigram", all=T)
+trigr_all <- merge(trigr_tab, twit_3gr_tab, by="trigram", all=T)
+trigr_all$total <- rowSums(trigr_all[,3:4])
+trigr_all <- arrange(trigr_all, desc(total)) 
+trigr_plot <- melt(trigr_all[1:10,1:4], id="trigram")
+
+ggplot(data=trigr_plot, aes(x=trigram,y=value,fill=variable)) +geom_bar(stat="identity",position="dodge")+
+    labs(x="trigram",y="Count") + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+```
+
+# Application plans
+
+## Algorithm
+
+The basic algorithm idea is to compile three master tables of single words, bigrams and trigrams from the available data sources.  
+- Partially completed words are compared to the single word table in order to propose suggested word completions from the most frequent word beginning with those characters  
+- Completed single words (ended with a space) are compared to the bigram table and the most frequent bigram beginning with that word used to propose a follow-on word  
+- Word pairs are compared to the trigram table, with the most frequent trigram used to propose the third word. If no matches are found, the last word is used to search the bigram table  
+
+
+## Shiny app
+
+The app will have a simple reactive text input box with a text display above for suggested words and phrases. Text input will be continually checked, cleaned and put through the algorithm above for suggested matches. These will be displayed in the text display with a button next to this for accepting the suggestion. Accepted suggestions will replace the text currently in the input box.
+
+
+## Presentation pitch
+
+This will be a short slidify presentation covering the following areas:  
+1) Outline of the proposed text prediction function and applications  
+2) Data sources used for learning  
+3) Processing algorithm  
+4) Details of the Shiny application  
